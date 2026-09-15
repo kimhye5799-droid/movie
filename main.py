@@ -1,60 +1,124 @@
-import streamlit as st
+import datetime
+import numpy as np
 import pandas as pd
-import requests
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
+import pytz
+import streamlit as st
 
-st.set_page_config(page_title="박스오피스 대시보드", layout="wide")
-st.title("🎬 어제의 박스오피스")
+# 페이지 기본 설정
+st.set_page_config(page_title="어제의 물고기 폐사율 현황", layout="wide")
 
-# 비밀 금고에서 인증키 꺼내기 (코드에는 키를 적지 않는다)
-KOBIS_KEY = st.secrets["KOBIS_KEY"]
+st.title("🐟 어제의 양식장 물고기 폐사율 현황")
 
-# 한국 시간 기준 어제 날짜를 여덟 자리로 (배포 서버 시계는 외국 기준일 수 있다)
-yesterday = datetime.now(ZoneInfo("Asia/Seoul")) - timedelta(days=1)
-target_dt = yesterday.strftime("%Y%m%d")
-st.caption(f"조회 기준일(어제): {yesterday.strftime('%Y-%m-%d')}")
 
-url = "https://www.kobis.or.kr/kobisopenapi/webservice/rest/boxoffice/searchDailyBoxOfficeList.json"
-res = requests.get(url, params={"key": KOBIS_KEY, "targetDt": target_dt}, timeout=10)
+# --- 1. 한국 시간(KST) 기준 '어제' 날짜 계산 ---
+def get_yesterday_kst():
+    # 서버 시계와 상관없이 한국 표준시(Asia/Seoul) 기준 시각을 가져옵니다.
+    tz_kst = pytz.timezone("Asia/Seoul")
+    now_kst = datetime.datetime.now(tz_kst)
 
-if res.status_code != 200:
-    st.error(f"요청이 실패했습니다 (상태코드: {res.status_code})")
+    # 어제 날짜 계산
+    yesterday = now_kst - datetime.timedelta(days=1)
+
+    return yesterday.strftime("%Y%m%d"), yesterday.strftime("%Y년 %m월 %d일")
+
+
+target_date_str, display_date = get_yesterday_kst()
+st.subheader(f"📅 기준일: {display_date}")
+
+
+# --- 2. 샘플 데이터 생성 함수 (실제 운영 시 DB/API 연동 구역) ---
+def load_mortality_data():
+    # 데이터 불러오기 시도 (예시용 데이터 생성)
+    try:
+        # 양식장 수조 목록
+        tanks = [f"수조 {i}호" for i in range(1, 11)]
+
+        # random seed를 어제 날짜 숫자로 고정하여 하루 동안은 동일한 데이터가 나오도록 설정
+        np.random.seed(int(target_date_str))
+
+        total_fish = np.random.randint(1000, 3000, size=10)  # 총 수량
+        dead_fish = np.random.randint(5, 150, size=10)  # 폐사 수량
+
+        df = pd.DataFrame(
+            {
+                "수조명": tanks,
+                "전체수량": total_fish,
+                "폐사수량": dead_fish,
+            }
+        )
+
+        # 폐사율(%) 계산: (폐사수량 / 전체수량) * 100
+        df["폐사율"] = (df["폐사수량"] / df["전체수량"]) * 100
+        df["폐사율"] = df["폐사율"].round(2)
+
+        # 폐사율이 높은 순서대로 정렬 및 순위 부여
+        df = df.sort_values(by="폐사율", ascending=False).reset_index(drop=True)
+        df["순위"] = df.index + 1
+
+        return df
+
+    except Exception as e:
+        # 데이터 로드 실패 시 None 반환
+        return None
+
+
+# 데이터 불러오기
+df = load_mortality_data()
+
+
+# --- 3. 데이터 검증 및 예외 처리 ---
+if df is None:
+    st.error("⚠️ 폐사율 데이터를 불러오는 중 오류가 발생했습니다.")
+    st.info(
+        "데이터베이스 연결 상태나 API 서버 응답을 확인해 주세요."
+    )
     st.stop()
 
-data = res.json()
-
-# KOBIS는 키가 틀려도 상태코드 200을 준다. 대신 faultInfo 상자가 온다.
-if "faultInfo" in data:
-    st.error("인증키가 올바르지 않습니다. 금고(Secrets)의 KOBIS_KEY를 확인해 주세요.")
+if df.empty:
+    st.warning("⚠️ 어제 집계된 폐사율 데이터가 없습니다.")
+    st.info("기록된 데이터가 없거나 수집 장비 점검 중일 수 있습니다.")
     st.stop()
 
-box_list = data.get("boxOfficeResult", {}).get("dailyBoxOfficeList", [])
-if not box_list:
-    st.warning("그날 자료가 없습니다. 날짜를 하루 더 앞으로 옮겨 보세요.")
-    st.stop()
 
-df = pd.DataFrame(box_list)
+# --- 4. 주요 지표 카드 표시 (폐사율 1위 수조 및 전체 요약) ---
+top_1 = df.iloc[0]
+total_all_fish = df["전체수량"].sum()
+total_dead_fish = df["폐사수량"].sum()
+avg_mortality_rate = round((total_dead_fish / total_all_fish) * 100, 2)
 
-# 글자로 온 숫자들을 진짜 숫자로 바꾸기
-for col in ["rank", "audiCnt", "audiAcc", "scrnCnt", "showCnt"]:
-    df[col] = pd.to_numeric(df[col])
+st.markdown("---")
+st.write(
+    f"⚠️ **최고 폐사율 기록: {top_1['수조명']} ({top_1['폐사율']}%)**"
+)
 
-# 1위 영화 지표 카드 세 장
-top = df.sort_values("rank").iloc[0]
-c1, c2, c3 = st.columns(3)
-c1.metric("어제 1위", top["movieNm"])
-c2.metric("어제 관객수", f"{top['audiCnt']:,}명")
-c3.metric("누적 관객", f"{top['audiAcc']:,}명")
+col1, col2, col3 = st.columns(3)
+col1.metric(label="전체 양식 수량", value=f"{total_all_fish:,} 마리")
+col2.metric(label="어제 총 폐사 수량", value=f"{total_dead_fish:,} 마리")
+col3.metric(label="평균 폐사율", value=f"{avg_mortality_rate}%")
 
-# 표를 한국어 열 이름으로 정리
-table = df[["rank", "movieNm", "openDt", "audiCnt", "audiAcc", "scrnCnt"]].copy()
-table.columns = ["순위", "영화명", "개봉일", "관객수", "누적관객", "스크린수"]
-table = table.sort_values("순위").reset_index(drop=True)
 
-st.subheader("📋 박스오피스 TOP 10")
-st.dataframe(table)
+# --- 5. 폐사율 상위 5개 수조 막대그래프 시각화 ---
+st.markdown("---")
+st.write("📊 **폐사율 상위 5개 수조 비교 (%)**")
 
-st.subheader("📈 관객수 상위 5편")
-top5 = table.sort_values("관객수", ascending=False).head(5)
-st.bar_chart(top5.set_index("영화명")["관객수"])
+top_5_df = df.head(5)[["수조명", "폐사율"]].set_index("수조명")
+st.bar_chart(top_5_df)
+
+
+# --- 6. 전체 수조 폐사율 현황 표 출력 ---
+st.markdown("---")
+st.write("📋 **전체 수조별 집계 목록**")
+
+# 컬럼 순서 정렬
+display_df = df[["순위", "수조명", "전체수량", "폐사수량", "폐사율"]]
+
+st.dataframe(
+    display_df,
+    use_container_width=True,
+    hide_index=True,
+    column_config={
+        "전체수량": st.column_config.NumberColumn(format="%d마리"),
+        "폐사수량": st.column_config.NumberColumn(format="%d마리"),
+        "폐사율": st.column_config.NumberColumn(format="%.2f%%"),
+    },
+)
