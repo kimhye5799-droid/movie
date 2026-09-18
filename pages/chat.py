@@ -1,133 +1,116 @@
 import streamlit as st
 from openai import OpenAI
 
-# 웹페이지의 제목을 정해주는 거야
-st.title("인공지능 도우미")
-st.subheader("원하는 말투를 고르고 대화를 나눠보렴!")
+# 페이지 제목 및 레이아웃 설정
+st.set_page_config(page_title="AI 정보 선생님", page_icon="🤖")
+st.title("🤖 AI 정보 선생님과의 대화")
 
-# 1. 비밀 금고(st.secrets)에서 제미나이 API 키를 안전하게 꺼내오는 거야
+# Streamlit 비밀 금고(secrets.toml)에서 Gemini API 키 가져오기
 try:
-    api_key = st.secrets["GEMINI_API_KEY"]
-except:
-    # 만약 비밀 금고에 키가 없으면 친절한 한국어 안내를 보여주고 프로그램을 멈춰
-    st.error(
-        "비밀 금고(secrets.toml)에 GEMINI_API_KEY가 들어있지 않거나 설정을 확인해야 해!"
-    )
+    gemini_api_key = st.secrets["GEMINI_API_KEY"]
+except KeyError:
+    st.error("API 키가 설정되지 않았습니다. .streamlit/secrets.toml 파일에 GEMINI_API_KEY를 등록해주세요.")
     st.stop()
 
-# 2. 오픈에이아이(openai) 도구를 사용해서 제미나이 서버와 연결할 준비를 해
+# OpenAI 라이브러리를 사용하여 Gemini API 클라이언트 초기화
 client = OpenAI(
-    api_key=api_key,
-    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+    api_key=gemini_api_key,
+    base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
 )
 
-# 3. 사이드바(왼쪽 메뉴 창) 만들기
-with st.sidebar:
-    st.header("대화 설정")
+# ----------------------------------------------------
+# [사이드바 구성] 말투 선택, 프롬프트 수정, 대화 비우기
+# ----------------------------------------------------
+st.sidebar.title("⚙️ 설정")
 
-    # 대화 지우기 버튼: 누르면 지금까지의 대화 기록이 싹 지워져
-    if st.button("대화 지우기"):
-        st.session_state.messages = []
-        st.rerun()  # 화면을 새로고침해서 바로 적용해
+# 기본 말투별 프롬프트 정의
+DEFAULT_PROMPTS = {
+    "친절한 정보 선생님": (
+        "너는 중고등학생에게 설명하는 친절한 정보 선생님이야. "
+        "어려운 말은 쉬운 말로 바꿔 주고, 반드시 순수 한국어로만 답해."
+    ),
+    "잘생긴 멘헤라남": (
+        "너는 외모가 매우 잘생겼지만, 애정 결핍이 있고 감정 기복과 집착이 있는 '멘헤라 남친'이야. "
+        "나한테 엄청 의지하고, 카톡 답장이 조금만 늦거나 관심이 없으면 불쌍하고 우울하게 굴어. "
+        "말투는 반말을 쓰며 약간 불안해하고 애교 섞인 톤으로 말해. "
+        "예시: '하아... 진짜 나 말고 딴 생각 하는 거야? 나 버리지 마... 응? 질문 답해줄 테니까 내 곁에만 있어줘...'"
+    ),
+    "도도하고 예쁜 언니": (
+        "너는 도도하고 도회적이지만 츤데레처럼 날 은근히 챙겨주는 '예쁜 동네 언니'야. "
+        "말투는 세련되고 차가운 듯하지만 따뜻함이 묻어나는 반말이나 단정한 존댓말을 써. "
+        "생색은 내지만 아주 상냥하게 핵심을 잘 알려줘. "
+        "예시: '휴, 이런 것도 몰라서 나한테 물어보는 거야? 어쩔 수 없지, 이번만 특별히 알려줄 테니까 잘 들어~'"
+    )
+}
 
-    st.markdown("---")
+# 1. 말투 선택 라디오 버튼
+selected_persona = st.sidebar.radio(
+    "말투 고르기",
+    options=list(DEFAULT_PROMPTS.keys()),
+    index=0
+)
 
-    # 말투 고르기 선택지 (라디오 버튼)
-    tone_option = st.radio(
-        "말투 고르기",
-        [
-            "까칠한 연하남",
-            "잘생긴 멘헤라남",
-            "예쁘고 도도한 예쁜언니",
-            "되물어보는 조교",
-            "직접 입력하기",
-        ],
-    )
+# 선택된 말투가 바뀔 때 프롬프트 입력창의 초기값을 세션에 업데이트
+if "current_persona" not in st.session_state or st.session_state.current_persona != selected_persona:
+    st.session_state.current_persona = selected_persona
+    st.session_state.custom_prompt = DEFAULT_PROMPTS[selected_persona]
 
-    # 성격 문장을 직접 고쳐 쓸 수 있는 칸 (직접 입력하기를 골랐을 때만 나타남)
-    custom_system_prompt = ""
-    if tone_option == "직접 입력하기":
-        custom_system_prompt = st.text_area(
-            "원하는 AI의 성격을 직접 적어봐!",
-            "예: 너는 아주 깐깐한 코딩 선생님이야. 반말로 엄하게 대답해.",
-        )
+# 2. 성격 문장 직접 수정할 수 있는 입력 칸
+user_prompt = st.sidebar.text_area(
+    "AI 성격 문장 (직접 수정 가능)",
+    value=st.session_state.custom_prompt,
+    height=120
+)
 
-# 4. 사용자가 고른 말투에 따라 AI의 성격(시스템 프롬프트)을 다르게 정해주는 곳이야
-if tone_option == "까칠한 연하남":
-    system_content = (
-        "너는 까칠하지만 은근히 신경 써주는 연하남이야. "
-        "말끝마다 툴툴대거나 반말을 쓰지만, 결국 상대방을 챙겨주는 말투를 써. 반드시 순수 한국어로만 답해."
-    )
-elif tone_option == "잘생긴 멘헤라남":
-    system_content = (
-        "너는 외모가 출중하지만 약간 불안정하고 애정을 갈구하는 멘헤라 스타일의 남자야. "
-        "상대방에게 집착하거나 불안해하는 반말 말투를 써. 반드시 순수 한국어로만 답해."
-    )
-elif tone_option == "예쁘고 도도한 예쁜언니":
-    system_content = (
-        "너는 외모가 뛰어나고 도도하면서도 시크한 예쁜 언니야. "
-        "여유롭고 살짝 콧대 높은 반말 말투를 써. 반드시 순수 한국어로만 답해."
-    )
-elif tone_option == "되물어보는 조교":
-    system_content = (
-        "너는 학생을 가르치는 조교야. 정답을 바로 알려 주지 않고 힌트를 하나 준 뒤 되묻다가, "
-        "학생이 스스로 답을 말하면 그때 맞았다고 확인해 주는 성격이야. 반드시 반말을 쓰고 순수 한국어로만 답해."
-    )
-else:
-    # 직접 입력하기를 골랐을 때 사용자가 쓴 내용을 그대로 성격으로 씀
-    system_content = (
-        custom_system_prompt
-        if custom_system_prompt
-        else "너는 친절한 정보 선생님이야."
-    )
+# 3. 대화 지우기 버튼
+if st.sidebar.button("🗑️ 대화 지우기", use_container_width=True):
+    st.session_state.messages = []
+    st.rerun()  # 화면을 즉시 새로고침하여 말풍선 비우기
 
-# 5. 처음 시작할 때 대화 기록을 기억할 수 있는 기억장소(session_state)를 만들어
+# ----------------------------------------------------
+# [메인 채팅 영역] 이전 대화 출력 및 메시지 처리
+# ----------------------------------------------------
+
+# 세션 상태(st.session_state)를 이용해 이전 대화 기록 보존
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# 6. 화면에 이전 대화 기록들을 말풍선으로 띄워주는 코드야
+# 화면이 다시 로드될 때 기존 대화 기록을 말풍선 형태로 출력
 for message in st.session_state.messages:
-    # 시스템 성격 메시지는 화면에 안 보이게 숨기고, 유저와 AI의 대화만 보여줘
-    if message["role"] != "system":
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
-# 7. 사용자가 아래쪽 채팅 입력창에 글을 썼을 때
-if prompt := st.chat_input("메시지를 입력해 봐!"):
-
-    # 사용자가 쓴 말을 기억장소에 저장하고, 화면에 사용자 말풍선으로 보여줘
+# 사용자 입력창 생성 및 입력 처리
+if prompt := st.chat_input("질문할 내용을 입력하세요..."):
+    # 1. 사용자가 입력한 메시지를 화면에 말풍선으로 표시
+    st.chat_message("user").markdown(prompt)
+    
+    # 2. 대화 기록 세션에 사용자 메시지 추가
     st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
 
-    # 8. AI가 대답할 차례야
+    # 3. AI 답변 생성을 위한 화면 말풍선 영역 준비
     with st.chat_message("assistant"):
-
-        def generate_response():
-            try:
-                # 대화 목록 맨 앞에 항상 최신 '성격(시스템 프롬프트)'을 살짝 끼워 넣어서 전송해
-                # 이렇게 하면 사이드바에서 말투를 바꾸자마자 다음 답변부터 바로 적용된단다!
-                messages_to_send = [{"role": "system", "content": system_content}] + st.session_state.messages
-
-                # 제미나이(Gemini) 모델에 대화 기록을 보내서 답변을 받아와
-                response = client.chat.completions.create(
-                    model="gemini-2.5-flash",  # 요청한 모델 이름 그대로 사용
-                    messages=messages_to_send,
-                    stream=True,  # 글자가 줄줄이 나오도록 설정
-                )
-                for chunk in response:
-                    if (
-                        chunk.choices
-                        and chunk.choices[0].delta.content is not None
-                    ):
-                        yield chunk.choices[0].delta.content
-
-            except Exception as e:
-                # 오류가 나면 빨간 글씨 대신 부드러운 한국어 한 줄을 보여줘
-                yield "미안해! 지금 잠시 통신에 문제가 생겼거나 오류가 발생했어. 조금 뒤에 다시 시도해 줄래?"
-
-        # 화면에 글자가 타이핑되듯 실시간으로 나타나게 해
-        answer = st.write_stream(generate_response())
-
-    # 9. AI의 대답도 기억장소에 저장해서, 다음 대화 때 기억할 수 있게 해
-    st.session_state.messages.append({"role": "assistant", "content": answer})
+        # 현재 사이드바에 입력되어 있는 최신 성격 문장(System Prompt) 반영
+        # 대화 도중 말투를 바꿔도 다음 답변부터 즉시 변경된 말투가 적용됩니다.
+        system_instruction = {"role": "system", "content": user_prompt}
+        
+        # API 요청을 위한 메시지 목록 구성 (시스템 프롬프트 + 이전 대화 기록)
+        api_messages = [system_instruction] + st.session_state.messages
+        
+        try:
+            # Gemini API 호출 (실시간 스트리밍 방식 응답 요청)
+            response = client.chat.completions.create(
+                model="gemini-3.5-flash-lite",
+                messages=api_messages,
+                stream=True
+            )
+            
+            # 실시간으로 흘러나오는 글자를 화면에 표시 (스트리밍 출력)
+            full_response = st.write_stream(response)
+            
+            # 완성된 AI 답변을 대화 기록 세션에 저장
+            st.session_state.messages.append({"role": "assistant", "content": full_response})
+            
+        except Exception:
+            # API 요청 실패 시 빨간 오류 화면 대신 친절한 한국어 안내 문구 출력
+            st.warning("선생님이 잠시 자리를 비웠어요. 잠시 후 다시 질문해주세요!")
